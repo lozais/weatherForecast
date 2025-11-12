@@ -121,7 +121,6 @@
     document.querySelectorAll('[data-city]').forEach(btn => {
       btn.addEventListener('click', () => map.setView(cities[btn.dataset.city], 8));
     });
-    // });
 
     // ---- OpenWeatherMap tiles (requires API key)
     // Layer names available in OWM Weathermaps 1.0/2.0: clouds_new, precipitation_new, wind_new, temp_new, pressure_new
