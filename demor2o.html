@@ -3,7 +3,7 @@
 <head>
   <meta charset="utf-8" />
   <meta name="viewport" content="width=device-width, initial-scale=1" />
-  <title>Nordic Weather Demo – R2O STORMS</title>
+  <title>Nordic Weather Demo</title>
   <link
     rel="stylesheet"
     href="https://unpkg.com/leaflet@1.9.4/dist/leaflet.css"
@@ -37,7 +37,7 @@
   <div id="app">
     <header>
       <h1>Nordic Weather Demo <small class="badge">Leaflet</small></h1>
-      <small>Designed for cyclone/ensemble product prototyping</small>
+      <small>Designed for educational/dissemination purposes</small>
     </header>
     <aside id="sidebar">
       <div class="card">
@@ -53,10 +53,13 @@
       <div class="card">
         <label>Quick zoom</label>
         <div class="zoom-row">
-          <button data-zoom="fi">Finland</button>
-          <button data-zoom="fenno">Fennoscandia</button>
-          <button data-zoom="nordic">Nordic region</button>
-          <button data-zoom="eu">Northern Europe</button>
+          <button data-city="helsinki">Helsinki</button>
+          <button data-city="tampere">Tampere</button>
+          <button data-city="oulu">Oulu</button>
+          <button data-city="rovaniemi">Rovaniemi</button>
+          <button data-city="stockholm">Stockholm</button>
+          <button data-city="uppsala">Uppsala</button>
+          <button data-city="tallinn">Tallinn</button>
         </div>
       </div>
 
@@ -96,16 +99,20 @@
       maxZoom: 19
     });
 
-    // ---- Region shortcuts
-    const regions = {
-      fi: [[59.4, 19.0], [70.2, 32.0]],               // Finland
-      fenno: [[55.0, 5.0], [72.5, 35.5]],             // Fennoscandia (NO/SE/FI)
-      nordic: [[54.5, 4.0], [72.5, 32.0]],            // Nordic (incl. DK)
-      eu: [[50.0, -10.0], [72.0, 40.0]]               // N. Europe
+    // ---- City shortcuts
+    const cities = {
+      helsinki: [60.1699, 24.9384],
+      tampere: [61.4978, 23.7610],
+      oulu: [65.0121, 25.4651],
+      rovaniemi: [66.5039, 25.7294],
+      stockholm: [59.3293, 18.0686],
+      uppsala: [59.8586, 17.6389],
+      tallinn: [59.4370, 24.7536]
     };
 
-    document.querySelectorAll('[data-zoom]').forEach(btn => {
-      btn.addEventListener('click', () => map.fitBounds(regions[btn.dataset.zoom]));
+    document.querySelectorAll('[data-city]').forEach(btn => {
+      btn.addEventListener('click', () => map.setView(cities[btn.dataset.city], 8));
+    });
     });
 
     // ---- OpenWeatherMap tiles (requires API key)
@@ -135,17 +142,28 @@
 
     // ---- Overlays
     const overlays = {};
+    const status = L.control({position:'bottomleft'});
+    status.onAdd = function(){ const d=L.DomUtil.create('div','legend'); d.id='statusBox'; d.innerHTML='Overlays: <em>idle</em>'; return d; };
+    status.addTo(map);
+
+    function wireStatus(layer,name){
+      let loaded = 0, errors = 0;
+      layer.on('tileload', ()=>{loaded++; document.getElementById('statusBox').innerHTML = `Overlays: loading ok (<b>${name}</b>)`;});
+      layer.on('tileerror', ()=>{errors++; document.getElementById('statusBox').innerHTML = `Overlays: <b>tile error</b> on ${name} – check API key or plan limits.`;});
+      return layer;
+    }
+
     if(apiKey){
-      overlays['MSLP (isobars)'] = owmTile('pressure_new', apiKey, {opacity:0.6});
-      overlays['10 m wind (speed)'] = owmTile('wind_new', apiKey, {opacity:0.55});
-      overlays['2 m temperature'] = owmTile('temp_new', apiKey, {opacity:0.55});
-      overlays['Cloud cover'] = owmTile('clouds_new', apiKey, {opacity:0.55});
-      overlays['Precipitation rate'] = owmTile('precipitation_new', apiKey, {opacity:0.6});
+      overlays['MSLP (isobars)'] = wireStatus(owmTile('pressure_new', apiKey, {opacity:0.6, maxZoom:12}), 'MSLP');
+      overlays['10 m wind (speed)'] = wireStatus(owmTile('wind_new', apiKey, {opacity:0.55}), 'Wind');
+      overlays['2 m temperature'] = wireStatus(owmTile('temp_new', apiKey, {opacity:0.55}), 'Temperature');
+      overlays['Cloud cover'] = wireStatus(owmTile('clouds_new', apiKey, {opacity:0.55}), 'Clouds');
+      overlays['Precipitation rate'] = wireStatus(owmTile('precipitation_new', apiKey, {opacity:0.6}), 'Precipitation');
       // Default-on layers
       overlays['MSLP (isobars)'].addTo(map);
       overlays['Cloud cover'].addTo(map);
+      document.getElementById('statusBox').innerHTML = 'Overlays: added (MSLP, Clouds).';
     } else {
-      // If no key yet, add a friendly legend hint
       const noKey = L.control({position:'topright'});
       noKey.onAdd = function(){
         const d = L.DomUtil.create('div', 'legend');
@@ -153,6 +171,7 @@
         return d;
       };
       noKey.addTo(map);
+      document.getElementById('statusBox').innerHTML = 'Overlays: API key missing.';
     }
 
     // ---- Layer controls
@@ -176,8 +195,8 @@
     if(overlays['MSLP (isobars)']) addOpacitySlider('MSLP opacity', overlays['MSLP (isobars)']).addTo(map);
     if(overlays['Cloud cover']) addOpacitySlider('Clouds opacity', overlays['Cloud cover']).addTo(map);
 
-    // Start centered on Fennoscandia
-    map.fitBounds(regions.fenno);
+    // Start centered on Helsinki by default
+    map.setView([60.1699, 24.9384], 7);
   </script>
 </body>
 </html>
