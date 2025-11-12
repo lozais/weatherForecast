@@ -1,15 +1,12 @@
 # scripts/render_overlays.py
-
 """
-Render transparent PNG overlays from ECMWF IFS GRIB2, robust to:
-- latitude ascending or descending
-- longitude in 0..360 or -180..180
-- missing files (falls back to placeholders)
+Render transparent PNG overlays for each step (0..48 h every 3 h).
+Robust to lat order and 0..360 vs -180..180 longitudes.
 
-Outputs go to 'out/' then your workflow copies to 'tiles/latest/'.
+Outputs to out/<var>_+NNN.png and out/manifest.json
 """
 
-import json, math, pathlib, glob
+import json, glob, pathlib
 import numpy as np
 import xarray as xr
 from PIL import Image
@@ -17,37 +14,36 @@ from PIL import Image
 DATA = pathlib.Path("data_raw")
 OUT  = pathlib.Path("out"); OUT.mkdir(parents=True, exist_ok=True)
 
-# Fennoscandia bbox (W,S,E,N) in -180..180 convention
+# Fennoscandia bbox [W,S,E,N]  (lon/lat in -180..180)
 W, S, E, N = 5.0, 55.0, 35.5, 72.5
 
-# Lon/lat grid for rendering (Plate Carrée)
-NX, NY = 900, 600  # modest resolution for speed
+# Target render grid (Plate Carrée)
+NX, NY = 900, 600
 
-# Steps we publish and the vars exposed to UI
-STEPS = ["+000","+006","+012","+024"]
-VARS  = ["msl","t2m","tp_rate","tcwv","ssr_flux","str_flux","gh500","gh850","wspd850"]
+# Steps we aim to publish (hours)
+TARGET_STEPS = list(range(0, 49, 3))  # 0,3,...,48
+
+# Variables exposed to UI
+VARS = ["msl","t2m","tp_rate","tcwv","ssr_flux","str_flux","gh500","gh850","wspd850"]
 
 def linspace2d():
     lons = np.linspace(W, E, NX, dtype=np.float32)
-    lats = np.linspace(N, S, NY, dtype=np.float32)  # top->bottom
-    return np.meshgrid(lons, lats)  # lon2, lat2
-
+    lats = np.linspace(N, S, NY, dtype=np.float32)
+    return np.meshgrid(lons, lats)
 LON2, LAT2 = linspace2d()
 
 def save_png(name, rgba):
-    img = Image.fromarray(rgba, mode="RGBA")
-    img.save(OUT / f"{name}.png", optimize=True)
+    Image.fromarray(rgba, mode="RGBA").save(OUT / f"{name}.png", optimize=True)
 
 def colorize(data, vmin, vmax, base=(0,0,0), top=(0,180,255), alpha=200):
     arr = np.array(data, dtype=float)
     mask = ~np.isfinite(arr)
-    t = (arr - vmin) / max(vmax - vmin, 1e-6)
-    t = np.clip(t, 0, 1)
+    rng = max(vmax - vmin, 1e-6)
+    t = np.clip((arr - vmin) / rng, 0, 1)
     r = (base[0]*(1-t) + top[0]*t).astype(np.uint8)
     g = (base[1]*(1-t) + top[1]*t).astype(np.uint8)
     b = (base[2]*(1-t) + top[2]*t).astype(np.uint8)
-    a = np.full_like(r, alpha, dtype=np.uint8)
-    a[mask] = 0
+    a = np.full_like(r, alpha, dtype=np.uint8); a[mask] = 0
     return np.dstack([r,g,b,a])
 
 def find_one(pattern):
@@ -62,34 +58,17 @@ def open_cf(path):
         return None
 
 def standardize_lon(lon):
-    """Return lon in -180..180."""
     lon = np.asarray(lon, dtype=float)
-    lon = (lon + 180.0) % 360.0 - 180.0
-    return lon
+    return (lon + 180.0) % 360.0 - 180.0
 
 def subset_bbox(da):
-    """Subset any (lat,lon) field to our bbox, robust to axis naming and order."""
-    # find lat/lon names
     latn = [n for n in da.dims if "lat" in n][0]
     lonn = [n for n in da.dims if "lon" in n][0]
-
-    # fetch coord arrays
     lats = da[latn].values
-    lons = da[lonn].values
-
-    # normalize longitudes to -180..180 for comparison
-    lons_std = standardize_lon(lons)
-
-    # Latitude slice: handle ascending or descending
-    if lats[0] > lats[-1]:  # descending (common in ECMWF)
-        lat_slice = slice(N, S)
-    else:                   # ascending
-        lat_slice = slice(S, N)
-
+    # latitude slice
+    lat_slice = slice(N, S) if lats[0] > lats[-1] else slice(S, N)
     da = da.sel({latn: lat_slice})
-
-    # Longitude selection: create mask in standardized space
-    # Attach standardized lon as a coord for selection
+    # longitude mask using standardized coord
     da = da.assign_coords({lonn + "_std": (lonn, standardize_lon(da[lonn]))})
     lon_std = da[lonn + "_std"].values
     if lon_std.ndim == 1:
@@ -97,171 +76,206 @@ def subset_bbox(da):
         idx = np.where(mask)[0]
         if idx.size > 0:
             da = da.isel({lonn: idx})
-    # drop helper coord
     if (lonn + "_std") in da.coords:
         da = da.drop_vars(lonn + "_std")
     return da
 
 def to_grid(da):
-    """Nearest-neighbor sample to our target lon/lat grid."""
     latn = [n for n in da.dims if "lat" in n][0]
     lonn = [n for n in da.dims if "lon" in n][0]
     da = da.rename({latn:"lat", lonn:"lon"})
     targ_lat = xr.DataArray(LAT2[:,0], dims=("y",))
     targ_lon = xr.DataArray(LON2[0,:], dims=("x",))
-    res = da.sel(lat=targ_lat, lon=targ_lon, method="nearest").transpose("y","x").values
-    return res
+    return da.sel(lat=targ_lat, lon=targ_lon, method="nearest").transpose("y","x").values
 
-def render_placeholders():
-    print("[INFO] Rendering placeholder overlays...")
-    base = np.full((NY, NX), np.nan, dtype=np.float32)
-    entries = {
-        "msl_+000": (960, 1040), "msl_+006": (960, 1040),
-        "t2m_+000": (-25, 25), "t2m_+006": (-25, 25),
-        "tp_rate_+006": (0, 6),
-        "gh500_+000": (4800, 5800), "gh850_+000": (1200, 1700),
-        "wspd850_+000": (0, 40),
-        "ssr_flux_+006": (0, 500), "str_flux_+006": (-150, 50),
-    }
-    for name, (vmin, vmax) in entries.items():
-        rgba = colorize(base, vmin, vmax)
-        save_png(name, rgba)
-
-def first_time_index(da):
-    """Return the first two indices in the time/step dimension if present, else None."""
+def get_time_dim(da):
+    # prefer 'step' (forecast lead hours), fallback to first time-like
     dims = list(da.dims)
-    time_like = [d for d in dims if d in ("time","step","valid_time","forecast_time")]
-    if not time_like:
-        return None, None, None
-    tdim = time_like[0]
-    n = da.sizes[tdim]
-    return tdim, 0 if n>0 else None, 1 if n>1 else None
+    if "step" in dims: return "step"
+    for d in ("time","valid_time","forecast_time"):
+        if d in dims: return d
+    return None
+
+def hours_from_coord(coord):
+    # try to convert 'step' (timedelta-like) to hours; else assume integers
+    try:
+        # cfgrib step is often in nanoseconds (timedelta64[ns]) → to hours
+        vals = coord.values
+        if np.issubdtype(vals.dtype, np.timedelta64):
+            return (vals / np.timedelta64(1, "h")).astype(int).tolist()
+        # plain ints
+        return [int(x) for x in vals.tolist()]
+    except Exception:
+        return list(range(coord.size))
+
+def render_field_series(ds, vname, convert_fn, palette, prefix):
+    """Render each TARGET_STEPS frame for a scalar field."""
+    tdim = get_time_dim(ds[vname])
+    steps_hours = hours_from_coord(ds[tdim]) if tdim else [0]
+    hours_to_index = {h:i for i,h in enumerate(steps_hours)}
+    produced = []
+    for h in TARGET_STEPS:
+        idx = hours_to_index.get(h)
+        if idx is None: continue
+        field = ds[vname].isel({tdim: idx}) if tdim else ds[vname]
+        field = subset_bbox(field)
+        grid = to_grid(convert_fn(field))
+        rgba = colorize(grid, *palette)
+        save_png(f"{prefix}_+{h:03d}", rgba)
+        produced.append(h)
+    return produced
+
+def render_diff_series(ds, vname, convert_fn, palette, prefix, step_hours=3):
+    """Render rate/flux from accumulations: frame h uses (h - (h-step_hours))."""
+    tdim = get_time_dim(ds[vname])
+    steps_hours = hours_from_coord(ds[tdim]) if tdim else []
+    hours_to_index = {h:i for i,h in enumerate(steps_hours)}
+    produced = []
+    for h in TARGET_STEPS:
+        if h < step_hours: continue
+        i1 = hours_to_index.get(h); i0 = hours_to_index.get(h - step_hours)
+        if i1 is None or i0 is None: continue
+        a1 = subset_bbox(ds[vname].isel({tdim: i1}))
+        a0 = subset_bbox(ds[vname].isel({tdim: i0}))
+        g1 = to_grid(a1); g0 = to_grid(a0)
+        grid = convert_fn(g1, g0, step_hours)
+        rgba = colorize(grid, *palette)
+        save_png(f"{prefix}_+{h:03d}", rgba)
+        produced.append(h)
+    return produced
 
 def main():
-    # Discover raw files
-    msl = find_one("msl_sfc_*.grib2")
-    t2  = find_one("2t_sfc_*.grib2")
-    tp  = find_one("tp_sfc_*.grib2")
-    ssr = find_one("ssr_sfc_*.grib2")
-    strn= find_one("str_sfc_*.grib2")
-    tcwv= find_one("tcwv_sfc_*.grib2")
+    steps_available = set()
 
-    gh500= find_one("gh_pl_500_*.grib2")
-    gh850= find_one("gh_pl_850_*.grib2")
+    # --- MSLP (Pa -> hPa) ---
+    msl = find_one("msl_sfc_*.grib2")
+    if msl:
+        ds = open_cf(msl)
+        try:
+            v = [n for n in ds.data_vars if n.startswith("msl")][0]
+            made = render_field_series(ds, v, lambda x: x/100.0, (960, 1040), "msl")
+            steps_available.update(made)
+        except Exception as e:
+            print("[WARN] msl:", e)
+
+    # --- 2m T (K -> °C) ---
+    t2 = find_one("2t_sfc_*.grib2")
+    if t2:
+        ds = open_cf(t2)
+        try:
+            v = [n for n in ds.data_vars if n.startswith("t2") or n=="2t"][0]
+            made = render_field_series(ds, v, lambda x: x-273.15, (-25, 25), "t2m")
+            steps_available.update(made)
+        except Exception as e:
+            print("[WARN] t2m:", e)
+
+    # --- Total precipitation rate (mm/h over 3h) from accum (m) ---
+    tp = find_one("tp_sfc_*.grib2")
+    if tp:
+        ds = open_cf(tp)
+        try:
+            v = [n for n in ds.data_vars if n.startswith("tp")][0]
+            def tp_rate(g1, g0, hrs):  # meters -> mm/h over 'hrs'
+                return (g1 - g0) * 1000.0 / hrs
+            made = render_diff_series(ds, v, tp_rate, (0, 6), "tp_rate", step_hours=3)
+            steps_available.update(made)
+        except Exception as e:
+            print("[WARN] tp_rate:", e)
+
+    # --- Net SW/LW flux (J/m^2 accum) -> W/m^2 over 3h ---
+    ssr = find_one("ssr_sfc_*.grib2")
+    if ssr:
+        ds = open_cf(ssr)
+        try:
+            v = [n for n in ds.data_vars if n.startswith("ssr")][0]
+            def sw_flux(g1, g0, hrs):  # W/m^2
+                return (g1 - g0) / (hrs*3600.0)
+            made = render_diff_series(ds, v, sw_flux, (0, 500), "ssr_flux", step_hours=3)
+            steps_available.update(made)
+        except Exception as e:
+            print("[WARN] ssr_flux:", e)
+
+    strn = find_one("str_sfc_*.grib2")
+    if strn:
+        ds = open_cf(strn)
+        try:
+            v = [n for n in ds.data_vars if n.startswith("str")][0]
+            def lw_flux(g1, g0, hrs):
+                return (g1 - g0) / (hrs*3600.0)
+            made = render_diff_series(ds, v, lw_flux, (-150, 50), "str_flux", step_hours=3)
+            steps_available.update(made)
+        except Exception as e:
+            print("[WARN] str_flux:", e)
+
+    # --- TCWV (kg/m^2) ---
+    tcwv = find_one("tcwv_sfc_*.grib2")
+    if tcwv:
+        ds = open_cf(tcwv)
+        try:
+            v = [n for n in ds.data_vars if n.startswith("tcwv")][0]
+            made = render_field_series(ds, v, lambda x: x, (0, 60), "tcwv")
+            steps_available.update(made)
+        except Exception as e:
+            print("[WARN] tcwv:", e)
+
+    # --- Geopotential (m^2/s^2) -> m at 500/850 hPa ---
+    def render_gh(level, vname_guess="gh"):
+        f = find_one(f"gh_pl_{level}_*.grib2")
+        if not f: return []
+        ds = open_cf(f)
+        try:
+            v = [n for n in ds.data_vars if n.startswith(vname_guess)][0]
+            made = render_field_series(ds, v, lambda x: x/9.80665,
+                                       (4800, 5800) if level==500 else (1200, 1700),
+                                       f"gh{level}")
+            return made
+        except Exception as e:
+            print(f"[WARN] gh{level}:", e); return []
+
+    steps_available.update(render_gh(500))
+    steps_available.update(render_gh(850))
+
+    # --- 850-hPa wind speed from u,v (m/s) ---
     u850 = find_one("u_pl_850_*.grib2")
     v850 = find_one("v_pl_850_*.grib2")
+    if u850 and v850:
+        dsu = open_cf(u850); dsv = open_cf(v850)
+        try:
+            vu = [n for n in dsu.data_vars if n.startswith("u")][0]
+            vv = [n for n in dsv.data_vars if n.startswith("v")][0]
+            tdim_u = get_time_dim(dsu[vu]); tdim_v = get_time_dim(dsv[vv])
+            hrs_u = hours_from_coord(dsu[tdim_u]) if tdim_u else [0]
+            hrs_v = hours_from_coord(dsv[tdim_v]) if tdim_v else [0]
+            map_u = {h:i for i,h in enumerate(hrs_u)}
+            map_v = {h:i for i,h in enumerate(hrs_v)}
+            made = []
+            for h in TARGET_STEPS:
+                iu = map_u.get(h); iv = map_v.get(h)
+                if iu is None or iv is None: continue
+                a = subset_bbox(dsu[vu].isel({tdim_u: iu}))
+                b = subset_bbox(dsv[vv].isel({tdim_v: iv}))
+                uu = to_grid(a); vv = to_grid(b)
+                wspd = np.sqrt(uu*uu + vv*vv)
+                rgba = colorize(wspd, 0, 40, base=(0,0,0), top=(255,255,255))
+                save_png(f"wspd850_+{h:03d}", rgba)
+                made.append(h)
+            steps_available.update(made)
+        except Exception as e:
+            print("[WARN] wspd850:", e)
 
-    have_any = any([msl,t2,tp,ssr,strn,tcwv,gh500,gh850,u850,v850])
-    run_id = "latest"
+    # --- Manifest: use the intersection of TARGET_STEPS and what we actually rendered ---
+    steps = [f"+{h:03d}" for h in sorted(steps_available)]
+    if not steps:
+        # fallback minimal to keep UI alive
+        steps = ["+000","+003","+006","+009"]
 
-    if not have_any:
-        render_placeholders()
-    else:
-        # --- MSLP (Pa -> hPa), +000 and +006 ---
-        if msl:
-            ds = open_cf(msl)
-            try:
-                vname = [n for n in ds.data_vars if n.startswith("msl")][0]
-                tdim, i0, i1 = first_time_index(ds[vname])
-                for idx, tag in [(i0,"+000"), (i1,"+006")]:
-                    if idx is None: continue
-                    field = ds[vname].isel({tdim: idx}) if tdim else ds[vname]
-                    field = subset_bbox(field)
-                    grid = to_grid(field) / 100.0
-                    save_png(f"msl_{tag}", colorize(grid, 960, 1040))
-            except Exception as e:
-                print("[WARN] MSLP render:", e)
-
-        # --- 2m T (K -> °C), +000 and +006 ---
-        if t2:
-            ds = open_cf(t2)
-            try:
-                vname = [n for n in ds.data_vars if n.startswith("t2") or n=="2t"][0]
-                tdim, i0, i1 = first_time_index(ds[vname])
-                for idx, tag in [(i0,"+000"), (i1,"+006")]:
-                    if idx is None: continue
-                    field = ds[vname].isel({tdim: idx}) if tdim else ds[vname]
-                    field = subset_bbox(field) - 273.15
-                    grid = to_grid(field)
-                    save_png(f"t2m_{tag}", colorize(grid, -25, 25, base=(0,0,0), top=(255,120,90)))
-            except Exception as e:
-                print("[WARN] T2M render:", e)
-
-        # --- tp rate (mm/h) between +000 and +006 ---
-        if tp:
-            ds = open_cf(tp)
-            try:
-                vname = [n for n in ds.data_vars if n.startswith("tp")][0]
-                tdim, i0, i1 = first_time_index(ds[vname])
-                if i0 is not None and i1 is not None:
-                    a0 = subset_bbox(ds[vname].isel({tdim:i0}))
-                    a1 = subset_bbox(ds[vname].isel({tdim:i1}))
-                    grid = (to_grid(a1) - to_grid(a0)) * 1000.0 / 6.0  # mm/h over 6h window
-                    save_png("tp_rate_+006", colorize(grid, 0, 6, base=(0,0,0), top=(0,120,255)))
-            except Exception as e:
-                print("[WARN] TP render:", e)
-
-        # --- gh500/gh850 (m^2/s^2 -> m) ---
-        if gh500:
-            ds = open_cf(gh500)
-            try:
-                vname = [n for n in ds.data_vars if n.startswith("gh")][0]
-                tdim, i0, _ = first_time_index(ds[vname])
-                if i0 is not None:
-                    a = subset_bbox(ds[vname].isel({tdim:i0})) / 9.80665
-                    save_png("gh500_+000", colorize(to_grid(a), 4800, 5800, base=(0,0,0), top=(180,255,255)))
-            except Exception as e:
-                print("[WARN] GH500 render:", e)
-
-        if gh850:
-            ds = open_cf(gh850)
-            try:
-                vname = [n for n in ds.data_vars if n.startswith("gh")][0]
-                tdim, i0, _ = first_time_index(ds[vname])
-                if i0 is not None:
-                    a = subset_bbox(ds[vname].isel({tdim:i0})) / 9.80665
-                    save_png("gh850_+000", colorize(to_grid(a), 1200, 1700, base=(0,0,0), top=(180,255,255)))
-            except Exception as e:
-                print("[WARN] GH850 render:", e)
-
-        # --- 850-hPa wind speed from u,v ---
-        if u850 and v850:
-            dsu = open_cf(u850); dsv = open_cf(v850)
-            try:
-                vn_u = [n for n in dsu.data_vars if n.startswith("u")][0]
-                vn_v = [n for n in dsv.data_vars if n.startswith("v")][0]
-                tu, i0, _ = first_time_index(dsu[vn_u])
-                tv, j0, _ = first_time_index(dsv[vn_v])
-                if i0 is not None and j0 is not None:
-                    a = subset_bbox(dsu[vn_u].isel({tu:i0}))
-                    b = subset_bbox(dsv[vn_v].isel({tv:j0}))
-                    uu = to_grid(a); vv = to_grid(b)
-                    wspd = np.sqrt(uu*uu + vv*vv)
-                    save_png("wspd850_+000", colorize(wspd, 0, 40, base=(0,0,0), top=(255,255,255)))
-            except Exception as e:
-                print("[WARN] WSPD850 render:", e)
-
-        # --- tcwv ---
-        if tcwv:
-            ds = open_cf(tcwv)
-            try:
-                vname = [n for n in ds.data_vars if n.startswith("tcwv")][0]
-                tdim, i0, _ = first_time_index(ds[vname])
-                if i0 is not None:
-                    a = subset_bbox(ds[vname].isel({tdim:i0}))
-                    save_png("tcwv_+000", colorize(to_grid(a), 0, 60, base=(0,0,0), top=(0,255,180)))
-            except Exception as e:
-                print("[WARN] TCWV render:", e)
-
-    # Manifest (even for placeholders)
     manifest = {
-        "run": run_id,
+        "run": "latest",           # can be set to an ISO run time later
         "bbox": [W, S, E, N],
-        "steps": STEPS,
+        "steps": steps,
         "vars": VARS
     }
     (OUT / "manifest.json").write_text(json.dumps(manifest, indent=2))
-    print("[OK] Overlays written to", OUT)
-
+    print("[OK] Overlays written to", OUT, "with", len(steps), "frames")
 if __name__ == "__main__":
     main()
