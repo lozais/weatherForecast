@@ -69,9 +69,8 @@
 
       <div class="card">
         <div class="copyright">
-          © 2025 Photonsphere Lab. Contains modified ECMWF IFS Open Data © ECMWF 2025,
-          licensed under <a href="https://creativecommons.org/licenses/by/4.0/" target="_blank" rel="noopener">CC BY 4.0</a>.
-          ECMWF does not accept any responsibility or liability for the use of the data.
+          © 2025 Photonsphere Lab. Contains modified ECMWF IFS Open Data © ECMWF (2025), licensed under
+          <a href="https://creativecommons.org/licenses/by/4.0/" target="_blank" rel="noopener">CC BY 4.0</a>.
         </div>
       </div>
     </aside>
@@ -108,29 +107,25 @@
     }
 
     function buildTimesFrom(manifest){
+      // Use ISO run if present; else current UTC hour
       let base = (manifest.run && manifest.run.includes('T')) ? new Date(manifest.run) : new Date();
       base.setUTCMinutes(0,0,0);
       const hours = manifest.steps.map(s => parseInt(s.replace('+',''),10));
       return hours.map(h => new Date(base.getTime() + h*3600*1000).toISOString());
     }
 
-    // Try WebP first, fallback to PNG, add cache-busting with run label
-    function urlForFrame(varKey, step, runTag){
-      const v = encodeURIComponent(runTag || 'v');
-      const base = `tiles/latest/${varKey}_${step}`;
-      return {
-        webp: `${base}.webp?v=${v}`,
-        png:  `${base}.png?v=${v}`
-      };
-    }
+    // Cache-busted URL
+    function urlFor(varKey, step, runTag){ return `tiles/latest/${varKey}_${step}.webp?v=${encodeURIComponent(runTag||'v')}`; }
 
     (async function init(){
       try{
         const manifest = await loadManifest();
         const [W,S,E,N] = manifest.bbox;
         const bounds = [[S, W], [N, E]];
+        const steps = manifest.steps;
+        const runTag = manifest.run || 'latest';
 
-        // Populate variable selector
+        // populate variables
         varSel.innerHTML = '';
         (manifest.vars || []).forEach(v => {
           const opt = document.createElement('option');
@@ -139,8 +134,9 @@
         });
         if (manifest.vars.includes('t2m')) varSel.value = 't2m';
 
-        // Build time axis
         const times = buildTimesFrom(manifest);
+
+        // map + base
         const map = L.map('map', {
           timeDimension: true,
           timeDimensionOptions: {
@@ -155,12 +151,11 @@
         }).addTo(map);
         map.fitBounds(bounds);
 
-        // Run label
         if (manifest.run && manifest.run.includes('T')) {
           runLabel.textContent = `Run: ${new Date(manifest.run).toISOString().replace('.000Z','Z')}`;
         }
 
-        // Quick-zooms
+        // quick zooms
         const cities = {
           helsinki: [60.1699, 24.9384],
           tampere: [61.4978, 23.7610],
@@ -171,46 +166,34 @@
           btn.addEventListener('click', () => map.setView(cities[btn.dataset.city], 8));
         });
 
-        const steps = manifest.steps; // e.g., ["+000","+003",...]
-        const runTag = (manifest.run || 'latest');
+        // Single image overlay reused for all frames
+        const image = L.imageOverlay('', bounds, {opacity:0.80}).addTo(map);
 
-        function makeTimeLayer(varKey){
-          const image = L.imageOverlay('', bounds, {opacity:0.80});
-          const tdLayer = L.timeDimension.layer.imageOverlay(image, {
-            updateTimeDimension: false,
-            // Compute URL for the current time → try webp, fallback to png
-            getUrlFunction: function(time){
-              const iso = new Date(time).toISOString();
-              const idx = times.indexOf(iso);
-              if (idx < 0) return null;
-              const step = steps[idx];
-              const u = urlForFrame(varKey, step, runTag);
-
-              // Try WebP, and if it fails once for this step, flip to PNG
-              // (Leaflet will re-call getUrlFunction on time change)
-              const img = new Image();
-              img.onload = () => { /* ok */ };
-              img.onerror = () => {
-                // swap to PNG for this frame
-                image.setUrl(u.png);
-                setStatus(`${VAR_LABELS[varKey]||varKey} — ${step} (PNG fallback)`);
-              };
-              img.src = u.webp;
-
-              setStatus(`${VAR_LABELS[varKey]||varKey} — ${step}`);
-              return u.webp; // Leaflet will use this; onerror handler swaps if needed
-            }
-          });
-          return tdLayer;
+        // Helper: set frame by index
+        function setFrame(idx){
+          const step = steps[idx];
+          const v = varSel.value;
+          const u = urlFor(v, step, runTag);
+          image.setUrl(u);
+          setStatus(`${VAR_LABELS[v]||v} — ${step} (${idx+1}/${steps.length})`);
         }
 
-        let current = makeTimeLayer(varSel.value || manifest.vars[0]);
-        current.addTo(map);
+        // Force-load the first frame immediately
+        setFrame(0);
 
+        // On time tick, update frame
+        const td = map.timeDimension;
+        td.on('timeload', (e) => {
+          const iso = new Date(e.time).toISOString();
+          const idx = times.indexOf(iso);
+          if (idx >= 0) setFrame(idx);
+        });
+
+        // When variable changes, keep the same time index
         varSel.addEventListener('change', () => {
-          if (current) map.removeLayer(current);
-          current = makeTimeLayer(varSel.value);
-          current.addTo(map);
+          const iso = td.getCurrentTimeISO();
+          const idx = times.indexOf(iso);
+          setFrame(Math.max(0, idx));
         });
 
         setStatus(`Ready — ${steps.length} frames`);
