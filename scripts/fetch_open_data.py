@@ -3,33 +3,28 @@ import datetime as dt
 from pathlib import Path
 from ecmwf.opendata import Client
 
-# Output folder
-OUTDIR = Path("data_raw")
-OUTDIR.mkdir(parents=True, exist_ok=True)
+OUTDIR = Path("data_raw"); OUTDIR.mkdir(parents=True, exist_ok=True)
 
-# Variables and levels
-SFC_PARAMS = ["msl", "2t", "tp", "tcwv", "ssr", "str"]
-PL_PARAMS = ["u", "v", "gh"]
-PL_LEVELS = [850, 500]
-STEPS_H = [0, 6]  # can add 12, 24 later
+SFC_PARAMS = ["msl","2t","tp","tcwv","ssr","str"]
+PL_PARAMS  = ["u","v","gh"]
+PL_LEVELS  = [850, 500]
+STEPS_H    = [0, 6]  # extend later
 
-# Pick latest 6-hour cycle
 now = dt.datetime.utcnow()
 cycle = (now.hour // 6) * 6
 run = now.replace(hour=cycle, minute=0, second=0, microsecond=0)
 
-# --- FIXED: no endpoint arg ---
-# The Client class already defaults to https://data.ecmwf.int/forecasts
+# default source is ECMWF Open Data at data.ecmwf.int
 c = Client(source="ecmwf")
 
 def fetch_sfc(param: str):
     tmp = OUTDIR / f"_tmp_{param}_{run:%Y%m%d%H}.grib2"
     if not tmp.exists():
         c.retrieve(
-            stream="hres",
-            time=f"{run:%H}",
-            date=f"{run:%Y-%m-%d}",
+            stream="oper",                 # <-- FIXED (was 'hres')
             type="fc",
+            date=f"{run:%Y-%m-%d}",
+            time=f"{run:%H}",
             step="/".join(str(s) for s in STEPS_H),
             param=param,
             target=str(tmp)
@@ -42,10 +37,10 @@ def fetch_pl(param: str, level: int):
     tmp = OUTDIR / f"_tmp_{param}_{level}_{run:%Y%m%d%H}.grib2"
     if not tmp.exists():
         c.retrieve(
-            stream="hres",
-            time=f"{run:%H}",
-            date=f"{run:%Y-%m-%d}",
+            stream="oper",                 # <-- FIXED (was 'hres')
             type="fc",
+            date=f"{run:%Y-%m-%d}",
+            time=f"{run:%H}",
             step="/".join(str(s) for s in STEPS_H),
             param=param,
             levtype="pl",
