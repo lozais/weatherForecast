@@ -2,7 +2,6 @@ name: Build ECMWF overlays
 
 on:
   schedule:
-    # ~90 min after typical HRES 00/06/12/18Z availability; adjust as you like
     - cron: "30 2,8,14,20 * * *"
   workflow_dispatch:
 
@@ -18,9 +17,7 @@ jobs:
           python-version: "3.11"
 
       - name: Install system deps
-        run: |
-          sudo apt-get update
-          sudo apt-get install -y libeccodes0
+        run: sudo apt-get update && sudo apt-get install -y libeccodes0
 
       - name: Install Python deps
         run: |
@@ -28,34 +25,11 @@ jobs:
           pip install eccodes cfgrib xarray netCDF4 numpy pandas pyproj pillow requests ecmwf-opendata
 
       - name: Fetch ECMWF open data (HRES subset)
-        run: |
-          python scripts/fetch_open_data.py
+        run: python scripts/fetch_open_data.py
 
       - name: Render overlays
-        run: |
-          python scripts/render_overlays.py
+        run: python scripts/render_overlays.py
 
-      # ---------- DEBUG ----------
-      - name: Debug: list files and sizes
-        run: |
-          echo "== data_raw =="
-          ls -lh data_raw || true
-          du -h data_raw || true
-          echo "== out =="
-          ls -lh out || true
-          du -h out || true
-
-      - name: Debug: peek manifest
-        run: |
-          test -f out/manifest.json && cat out/manifest.json || echo "manifest missing"
-
-      - name: Upload out/ as artifact (inspect overlays)
-        uses: actions/upload-artifact@v4
-        with:
-          name: out-overlays
-          path: out/
-
-      # ---------- PUBLISH ----------
       - name: Publish to tiles/latest
         run: |
           mkdir -p tiles/latest
