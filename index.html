@@ -3,7 +3,7 @@
 <head>
   <meta charset="utf-8"/>
   <meta name="viewport" content="width=device-width, initial-scale=1"/>
-  <title>Photonsphere Lab ECMWF Nordic Forecast Viewer</title>
+  <title>ECMWF Nordic Forecast Viewer</title>
 
   <!-- Leaflet -->
   <link rel="stylesheet" href="https://cdn.jsdelivr.net/npm/leaflet@1.9.4/dist/leaflet.css"/>
@@ -27,10 +27,8 @@
     select,button{width:100%;padding:8px 10px;border-radius:10px;border:1px solid rgba(255,255,255,.14);background:#0f172a;color:var(--fg)}
     button.primary{background:var(--accent);color:#08101c;border:none;font-weight:700;cursor:pointer}
     .muted{color:var(--muted);font-size:12px}
-    .row{display:flex;gap:8px}
-    .row > *{flex:1}
+    .row{display:flex;gap:8px}.row>*{flex:1}
     .footer-note{position:absolute;left:10px;bottom:10px;background:rgba(0,0,0,.45);padding:6px 8px;border:1px solid rgba(255,255,255,.15);border-radius:8px;font-size:12px}
-    .badge{display:inline-block;padding:2px 6px;border-radius:999px;background:rgba(124,192,255,.15);color:#bfe0ff;font-weight:700;font-size:11px;margin-left:6px}
     .status{position:absolute;right:10px;bottom:10px;background:rgba(0,0,0,.45);padding:6px 8px;border:1px solid rgba(255,255,255,.15);border-radius:8px;font-size:12px}
     .copyright{font-size:12px;color:var(--muted);line-height:1.35;}
   </style>
@@ -38,8 +36,8 @@
 <body>
   <div id="app">
     <header>
-      <h1>ECMWF Nordic Forecast Viewer <span class="badge">time animation</span></h1>
-      <small class="muted">Fennoscandia demo — latest run</small>
+      <h1>ECMWF Nordic Forecast Viewer <span style="font-size:11px;opacity:.8;margin-left:6px">Time animation</span></h1>
+      <small class="muted" id="runLabel">latest run</small>
     </header>
 
     <aside id="sidebar">
@@ -66,14 +64,15 @@
       <div class="card">
         <label>About</label>
         <div class="muted">
-          Pre-rendered overlays from <code>tiles/latest</code> (ECMWF IFS Open Data). Time slider controls appear on the map.
+          Pre-rendered overlays from <code>tiles/latest</code> (ECMWF IFS Open Data). Time controls appear on the map.
         </div>
       </div>
 
       <div class="card">
         <div class="copyright">
-          © 2025 Photonsphere Lab. Uses ECMWF IFS Open Data © ECMWF 2025,
-          licensed under CC BY 4.0. “Contains modified Copernicus/ECMWF information.”
+          © 2025 Photonsphere Lab. Contains modified ECMWF IFS Open Data © ECMWF 2025,
+          licensed under <a href="https://creativecommons.org/licenses/by/4.0/" target="_blank" rel="noopener">CC BY 4.0</a>.
+          ECMWF does not accept any responsibility or liability for the use of the data.
         </div>
       </div>
     </aside>
@@ -86,6 +85,7 @@
 
   <script>
     const statusEl = document.getElementById('status');
+    const runLabel = document.getElementById('runLabel');
     const varSel = document.getElementById('varSel');
 
     const VAR_LABELS = {
@@ -108,73 +108,12 @@
       return await res.json();
     }
 
-    // Simple map, will be replaced by a TimeDimension-enabled map
-    const baseMap = L.map('map', { zoom: 6, center: [62.0, 25.0] });
-    L.tileLayer('https://{s}.tile.openstreetmap.org/{z}/{x}/{y}.png', {
-      maxZoom: 19, attribution: '&copy; OpenStreetMap contributors'
-    }).addTo(baseMap);
-
-    // City quick zooms (reduced list)
-    const cities = {
-      helsinki: [60.1699, 24.9384],
-      tampere: [61.4978, 23.7610],
-      oulu: [65.0121, 25.4651],
-      stockholm: [59.3293, 18.0686]
-    };
-    document.querySelectorAll('[data-city]').forEach(btn => {
-      btn.addEventListener('click', () => baseMap.setView(cities[btn.dataset.city], 8));
-    });
-
-    let manifest = null;
-    let timeDimension = null;
-    let timeControl = null;
-    let tdMap = null;                // TimeDimension-enabled map wrapper
-    let currentLayer = null;         // the time-aware overlay layer
-    let bounds = null;
-
-    // Build times from steps (+000, +003, ...) -> we use T+Xh labels unless manifest.run is an ISO time
-    function buildTimes(steps, runISO){
-      // If runISO is a real ISO string (e.g., "2025-11-12T12:00:00Z"), use it; else use now.
-      let base = runISO && runISO.includes('T') ? new Date(runISO) : new Date();
-      // Normalize base to the hour:
+    function buildTimesFrom(manifest){
+      // If manifest.run is ISO (e.g. "2025-11-12T12:00:00Z"), use as base; else use current UTC hour
+      let base = (manifest.run && manifest.run.includes('T')) ? new Date(manifest.run) : new Date();
       base.setUTCMinutes(0,0,0);
-      const hours = steps.map(s => parseInt(s.replace('+',''),10));
+      const hours = manifest.steps.map(s => parseInt(s.replace('+',''),10));
       return hours.map(h => new Date(base.getTime() + h*3600*1000).toISOString());
-    }
-
-    // Custom time-aware overlay that swaps the image on time change
-    function makeTimeOverlayLayer(varKey, steps, bbox){
-      // shared image overlay (we reuse the same object to avoid flicker)
-      const image = L.imageOverlay('', [[bbox[1], bbox[0]], [bbox[3], bbox[2]]], {opacity:0.70});
-      let added = false;
-
-      const TimeLayer = L.TimeDimension.Layer.extend({
-        initialize: function(){
-          L.TimeDimension.Layer.prototype.initialize.call(this, image, {updateTimeDimension:false});
-        },
-        onAdd: function(map){
-          if(!added){
-            image.addTo(map);
-            added = true;
-          }
-          L.TimeDimension.Layer.prototype.onAdd.call(this, map);
-        },
-        onRemove: function(map){
-          L.TimeDimension.Layer.prototype.onRemove.call(this, map);
-        },
-        _onNewTimeLoading: function(e){
-          const time = e.time; // ISO string millis
-          // Map ISO time back to index
-          const idx = this._timeDimension.getAvailableTimes().indexOf(time);
-          if(idx < 0) return;
-          const step = steps[idx]; // "+000", "+003", ...
-          const url = `tiles/latest/${varKey}_${step}.png`; // or .webp if you switch later
-          image.setUrl(url);
-          setStatus(`${VAR_LABELS[varKey]||varKey} — ${step} (frame ${idx+1}/${steps.length})`);
-          this._timeDimension.fire('timeload', {time: time});
-        }
-      });
-      return new TimeLayer();
     }
 
     function populateVarSelector(vars){
@@ -184,69 +123,81 @@
         opt.value = v; opt.textContent = VAR_LABELS[v] || v;
         varSel.appendChild(opt);
       });
-      // Default selection
       if (vars.includes('t2m')) varSel.value = 't2m';
     }
 
-    async function init(){
+    (async function init(){
       try{
-        manifest = await loadManifest();
-        // Bounds from manifest.bbox = [W,S,E,N]
-        const [W,S,E,N] = manifest.bbox;
-        bounds = [[S, W], [N, E]];
-        baseMap.fitBounds(bounds);
-
+        const manifest = await loadManifest();
         populateVarSelector(manifest.vars);
 
-        // Build ISO times for TimeDimension
-        const times = buildTimes(manifest.steps, manifest.run); // run may be "latest" now; still fine
-        timeDimension = new L.TimeDimension({
-          times: times,
-          currentTime: times[0],
-          period: "PT3H"  // 3-hourly frames
+        // Map + TimeDimension
+        const [W,S,E,N] = manifest.bbox;
+        const bounds = [[S, W], [N, E]];
+        const times = buildTimesFrom(manifest);
+        const map = L.map('map', {
+          timeDimension: true,
+          timeDimensionOptions: {
+            times: times.join(','),
+            currentTime: times[0],
+            period: "PT3H"
+          },
+          timeDimensionControl: true
+        });
+        L.tileLayer('https://{s}.tile.openstreetmap.org/{z}/{x}/{y}.png', {
+          maxZoom: 19, attribution: '&copy; OpenStreetMap contributors'
+        }).addTo(map);
+        map.fitBounds(bounds);
+
+        // Update run label if we have ISO time
+        if (manifest.run && manifest.run.includes('T')) {
+          runLabel.textContent = `Run: ${new Date(manifest.run).toISOString().replace('.000Z','Z')}`;
+        }
+
+        // City quick zooms
+        const cities = {
+          helsinki: [60.1699, 24.9384],
+          tampere: [61.4978, 23.7610],
+          oulu: [65.0121, 25.4651],
+          stockholm: [59.3293, 18.0686]
+        };
+        document.querySelectorAll('[data-city]').forEach(btn => {
+          btn.addEventListener('click', () => map.setView(cities[btn.dataset.city], 8));
         });
 
-        // Create timedimension map wrapper (re-uses the same baseMap)
-        tdMap = L.map(baseMap, {
-          timeDimension: timeDimension,
-          timeDimensionControl: false
-        });
+        // Factory for time-aware image overlay using WebP frames
+        const steps = manifest.steps; // ["+000","+003",...]
+        function makeTimeLayer(varKey){
+          const image = L.imageOverlay('', bounds, {opacity:0.70});
+          const tdLayer = L.timeDimension.layer.imageOverlay(image, {
+            updateTimeDimension: false,
+            getUrlFunction: function(time){
+              const timeStr = new Date(time).toISOString();
+              const idx = times.indexOf(timeStr);
+              if (idx < 0) return null;
+              const step = steps[idx];
+              return `tiles/latest/${varKey}_${step}.webp`; // <-- WebP
+            }
+          });
+          return tdLayer;
+        }
 
-        // Add a TimeDimension control (play/pause + slider)
-        timeControl = new L.Control.TimeDimension({
-          position: 'bottomleft',
-          timeSliderDragUpdate: true,
-          playerOptions: {
-            buffer: 2,
-            minBufferReady: 1,
-            transitionTime: 600,  // ms per frame
-            loop: true,
-            startOver: true
-          }
-        });
-        tdMap.addControl(timeControl);
+        let current = makeTimeLayer(varSel.value || manifest.vars[0]);
+        current.addTo(map);
 
-        // Create first variable layer
-        const initialVar = varSel.value || manifest.vars[0];
-        currentLayer = makeTimeOverlayLayer(initialVar, manifest.steps, manifest.bbox);
-        currentLayer.addTo(tdMap);
-
-        // When variable changes, swap the time-aware layer
         varSel.addEventListener('change', () => {
-          if (currentLayer) tdMap.removeLayer(currentLayer);
-          currentLayer = makeTimeOverlayLayer(varSel.value, manifest.steps, manifest.bbox);
-          currentLayer.addTo(tdMap);
+          if (current) map.removeLayer(current);
+          current = makeTimeLayer(varSel.value);
+          current.addTo(map);
+          setStatus(`${VAR_LABELS[varSel.value]||varSel.value}`);
         });
 
-        setStatus(`Ready — ${manifest.steps.length} frames`);
-      } catch (e){
+        setStatus(`Ready — ${steps.length} frames`);
+      }catch(e){
         console.error(e);
         setStatus('Failed to initialize (check manifest & tiles).');
       }
-    }
-
-    init();
+    })();
   </script>
 </body>
 </html>
-
