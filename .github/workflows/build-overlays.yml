@@ -35,6 +35,25 @@ jobs:
         run: |
           python scripts/render_overlays.py
 
+            - name: Debug: list files and sizes
+        run: |
+          echo "== data_raw =="
+          ls -lh data_raw || true
+          du -h data_raw || true
+          echo "== out =="
+          ls -lh out || true
+          du -h out || true
+
+      - name: Debug: peek manifest
+        run: |
+          test -f out/manifest.json && cat out/manifest.json || echo "manifest missing"
+
+      - name: Upload out/ as artifact (inspect overlays)
+        uses: actions/upload-artifact@v4
+        with:
+          name: out-overlays
+          path: out/
+
       - name: Publish to tiles/latest
         run: |
           mkdir -p tiles/latest
