@@ -147,8 +147,12 @@
           },
           timeDimensionControl: true,
           timeDimensionControlOptions: {
-          loop: true,       // <- keep looping
-          autoPlay: false   // set this true if you want auto start
+            autoPlay: false,         // don't auto-play on load
+            playerOptions: {
+              transitionTime: 1000,  // 1 second between frames (tune as you like)
+              loop: true,            // infinite loop
+              startOver: true        // when finished, next Play starts from the beginning
+              }
           }
         });
         L.tileLayer('https://{s}.tile.openstreetmap.org/{z}/{x}/{y}.png', {
