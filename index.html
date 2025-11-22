@@ -151,7 +151,6 @@
           maxZoom: 19, attribution: '&copy; OpenStreetMap contributors'
         }).addTo(map);
         map.fitBounds(bounds);
-        map.timeDimension.setCurrentTime(timeMs);
 
         if (manifest.run && manifest.run.includes('T')) {
           runLabel.textContent = `Run: ${new Date(manifest.run).toISOString().replace('.000Z','Z')}`;
@@ -203,6 +202,8 @@
         console.error(e);
         setStatus('Failed to initialize (check manifest & tiles).');
       }
+      // set the animation to the initial frame when loading the webpage
+      map.timeDimension.setCurrentTime(timeMs);
     })();
   </script>
 </body>
